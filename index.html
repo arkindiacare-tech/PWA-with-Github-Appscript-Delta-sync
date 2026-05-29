@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>My Offline PWA</title>
+  
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#4285F4">
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f7f6;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .card {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      width: 100%;
+      max-width: 400px;
+      text-align: center;
+    }
+    input {
+      width: 90%;
+      padding: 10px;
+      margin: 10px 0;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      box-sizing: border-box;
+    }
+    button {
+      background-color: #4285F4;
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      width: 100%;
+      margin-top: 10px;
+    }
+    button:hover { background-color: #3367D6; }
+    #installAppBtn {
+      background-color: #34A853; 
+      font-weight: bold;
+      display: none; 
+      margin-bottom: 20px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    }
+    #syncStatusText {
+      margin-top: 15px;
+      font-size: 14px;
+      font-weight: bold;
+      color: #555;
+    }
+    /* Styles for the Notes List */
+    #notesList {
+      margin-top: 20px;
+      text-align: left;
+      width: 100%;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .note-item {
+      background: #eef2f5;
+      padding: 10px;
+      margin-bottom: 8px;
+      border-radius: 6px;
+      font-size: 14px;
+      border-left: 4px solid #4285F4;
+      display: flex;
+      justify-content: space-between;
+    }
+    .cloud-icon { font-size: 12px; }
+  </style>
+</head>
+<body>
+
+  <button id="installAppBtn">📲 Install App to Homescreen</button>
+
+  <div class="card">
+    <h2>Fast Notes PWA</h2>
+    <p style="font-size: 12px; color: gray;">Delta Sync Engine Active</p>
+    
+    <input type="text" id="noteInput" placeholder="Type a note here...">
+    <button onclick="handleSave()">Save Note</button>
+    
+    <div id="syncStatusText">Initializing App...</div>
+    
+    <div id="notesList">
+      </div>
+  </div>
+
+  <script>
+    // ==========================================
+    // !!! PASTE YOUR GOOGLE APPS SCRIPT URL HERE !!!
+    // ==========================================
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx7pP3Qm4EMMdXX-m6lkO1wLHhfIqOvjOF80Qyrg4S0RtOYRH13FvUdOCFhjCYcAFAx/exec";
+
+    // 1. PWA INSTALL LOGIC (Unchanged)
+    let deferredPrompt;
+    const installBtn = document.getElementById('installAppBtn');
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault(); deferredPrompt = e; installBtn.style.display = 'block';
+    });
+    installBtn.addEventListener('click', async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt(); await deferredPrompt.userChoice;
+        deferredPrompt = null; installBtn.style.display = 'none';
+      }
+    });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+
+    // ==========================================
+    // 2. ADVANCED INDEXED-DB LOGIC
+    // ==========================================
+    let db;
+    function initDB() {
+      return new Promise((resolve, reject) => {
+        // Upgraded to Version 2 to support Delta Sync Indexes
+        const request = indexedDB.open("GasAppDatabase", 2);
+
+        request.onupgradeneeded = function(event) {
+          const database = event.target.result;
+          let store;
+          if (!database.objectStoreNames.contains("notes")) {
+            store = database.createObjectStore("notes", { keyPath: "id" });
+          } else {
+            store = event.target.transaction.objectStore("notes");
+          }
+          // Indexes allow us to rapidly query "give me all unsynced notes" or "find max timestamp"
+          if (!store.indexNames.contains("syncStatus")) store.createIndex("syncStatus", "syncStatus", { unique: false });
+          if (!store.indexNames.contains("timestamp")) store.createIndex("timestamp", "timestamp", { unique: false });
+        };
+
+        request.onsuccess = function(event) { db = event.target.result; resolve(); };
+        request.onerror = function(event) { reject("IndexedDB Error"); };
+      });
+    }
+
+    // Helper: Wrap IDB in Promises for clean async/await code
+    function idbOperation(mode, callback) {
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["notes"], mode);
+        const store = transaction.objectStore("notes");
+        const request = callback(store);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    // ==========================================
+    // 3. CORE APP LOGIC
+    // ==========================================
+    
+    // Generate a secure, cross-device unique ID
+    function generateID() {
+      return Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 9);
+    }
+
+    // Initialize App Flow
+    window.onload = async () => {
+      await initDB();
+      await renderNotes(); // Show whatever we already have offline instantly
+      document.getElementById('syncStatusText').innerText = "App Ready. Syncing with cloud...";
+      
+      // Perform Delta Syncs on load
+      await syncDown(); 
+      await syncUp();   
+    };
+
+    // Save Button Trigger
+    async function handleSave() {
+      const input = document.getElementById('noteInput');
+      const text = input.value.trim();
+      if (!text) return;
+
+      const newNote = {
+        id: generateID(),
+        text: text,
+        timestamp: Date.now(),
+        syncStatus: 0 // 0 = Needs to be pushed to cloud
+      };
+
+      // 1. Save locally instantly
+      await idbOperation("readwrite", store => store.put(newNote));
+      input.value = "";
+      
+      // 2. Update screen instantly
+      await renderNotes();
+      
+      // 3. Quietly trigger upload in the background
+      syncUp();
+    }
+
+    // Draw notes to the screen
+    async function renderNotes() {
+      const notes = await idbOperation("readonly", store => store.getAll());
+      // Sort newest to oldest
+      notes.sort((a, b) => b.timestamp - a.timestamp); 
+      
+      const listElement = document.getElementById('notesList');
+      listElement.innerHTML = notes.map(note => `
+        <div class="note-item">
+          <span>${note.text}</span>
+          <span class="cloud-icon" title="Sync Status">${note.syncStatus === 1 ? '☁️ ✔' : '⏳'}</span>
+        </div>
+      `).join('');
+    }
+
+    // ==========================================
+    // 4. DELTA SYNC ENGINE
+    // ==========================================
+
+    // Push local missing data TO Google
+    async function syncUp() {
+      document.getElementById('syncStatusText').innerText = "Pushing data...";
+      
+      // Find all notes where syncStatus is 0
+      const allNotes = await idbOperation("readonly", store => store.getAll());
+      const pendingNotes = allNotes.filter(n => n.syncStatus === 0);
+
+      if (pendingNotes.length === 0) {
+        document.getElementById('syncStatusText').innerText = "All data up to date.";
+        return;
+      }
+
+      try {
+        const response = await fetch(WEB_APP_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(pendingNotes)
+        });
+        const result = await response.json();
+
+        if (result.status === 'success') {
+          // Update local DB to mark them as synced (status 1)
+          const transaction = db.transaction(["notes"], "readwrite");
+          const store = transaction.objectStore("notes");
+          pendingNotes.forEach(note => {
+            note.syncStatus = 1;
+            store.put(note);
+          });
+          
+          document.getElementById('syncStatusText').innerText = "Sync complete.";
+          renderNotes(); // Refresh UI to show cloud checkmarks
+        }
+      } catch (error) {
+        document.getElementById('syncStatusText').innerText = "Offline. Will sync later.";
+      }
+    }
+
+    // Pull missing data FROM Google
+    async function syncDown() {
+      document.getElementById('syncStatusText').innerText = "Checking for new data...";
+      
+      // Find the highest timestamp we currently have locally
+      const allNotes = await idbOperation("readonly", store => store.getAll());
+      let maxTimestamp = 0;
+      if (allNotes.length > 0) {
+        maxTimestamp = Math.max(...allNotes.map(n => n.timestamp));
+      }
+
+      try {
+        // Send our highest timestamp to Google
+        const response = await fetch(`${WEB_APP_URL}?lastSync=${maxTimestamp}`);
+        const result = await response.json();
+
+        if (result.status === 'success' && result.data.length > 0) {
+          // Save the new rows from Google directly into IndexedDB
+          const transaction = db.transaction(["notes"], "readwrite");
+          const store = transaction.objectStore("notes");
+          
+          result.data.forEach(note => store.put(note));
+          
+          document.getElementById('syncStatusText').innerText = `Fetched ${result.data.length} new records!`;
+          renderNotes(); // Refresh UI to show new notes
+        } else {
+          document.getElementById('syncStatusText').innerText = "All data up to date.";
+        }
+      } catch (error) {
+         document.getElementById('syncStatusText').innerText = "Offline. Reading local data.";
+      }
+    }
+  </script>
+</body>
+</html>
