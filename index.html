@@ -3,232 +3,200 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>My Offline PWA</title>
-  
+  <title>Advanced PWA Sync</title>
   <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#4285F4">
-
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background-color: #f4f7f6;
-      margin: 0;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    .card {
-      background: white;
-      padding: 20px;
-      border-radius: 12px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-      width: 100%;
-      max-width: 400px;
-      text-align: center;
-    }
-    input {
-      width: 90%;
-      padding: 10px;
-      margin: 10px 0;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-      box-sizing: border-box;
-    }
-    button {
-      background-color: #4285F4;
-      color: white;
-      border: none;
-      padding: 12px 20px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 16px;
-      width: 100%;
-      margin-top: 10px;
-    }
-    button:hover { background-color: #3367D6; }
-    
-    #installAppBtn {
-      background-color: #34A853; 
-      font-weight: bold;
-      display: none; 
-      margin-bottom: 20px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-    }
-    
-    /* New Manual Sync Button Styling */
-    #manualSyncBtn {
-      background-color: transparent;
-      color: #4285F4;
-      border: 1px solid #4285F4;
-      margin-top: 15px;
-      padding: 8px;
-      font-size: 14px;
-    }
-    #manualSyncBtn:hover {
-      background-color: #e8f0fe;
-    }
-
-    #syncStatusText {
-      margin-top: 15px;
-      font-size: 14px;
-      font-weight: bold;
-      color: #555;
-    }
-    #notesList {
-      margin-top: 20px;
-      text-align: left;
-      width: 100%;
-      max-height: 300px;
-      overflow-y: auto;
-    }
-    .note-item {
-      background: #eef2f5;
-      padding: 10px;
-      margin-bottom: 8px;
-      border-radius: 6px;
-      font-size: 14px;
-      border-left: 4px solid #4285F4;
-      display: flex;
-      justify-content: space-between;
-    }
-    .cloud-icon { font-size: 12px; }
+    body { font-family: Arial; background: #f4f7f6; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 400px; }
+    input { width: 90%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+    button { background: #4285F4; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; }
+    .action-btn { width: auto; padding: 6px 10px; font-size: 12px; margin-left: 5px; }
+    .edit-btn { background: #f4b400; }
+    .del-btn { background: #db4437; }
+    #syncStatusText { margin-top: 15px; font-size: 14px; color: #555; text-align: center; font-weight: bold; }
+    #notesList { margin-top: 20px; width: 100%; max-height: 400px; overflow-y: auto; }
+    .note-item { background: #eef2f5; padding: 10px; margin-bottom: 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;}
+    .note-content { flex-grow: 1; word-break: break-word; font-size: 14px; }
   </style>
 </head>
 <body>
 
-  <button id="installAppBtn">📲 Install App to Homescreen</button>
-
   <div class="card">
-    <h2>Fast Notes PWA</h2>
-    <p style="font-size: 12px; color: gray;">Smart Event-Driven Sync Active</p>
+    <h2>Enterprise Sync App</h2>
     
-    <input type="text" id="noteInput" placeholder="Type a note here...">
-    <button onclick="handleSave()">Save Note</button>
+    <input type="hidden" id="editId">
+    <input type="text" id="noteInput" placeholder="Type a note...">
+    <button onclick="handleSave()" id="saveBtn">Save Note</button>
+    <button onclick="syncData()" style="background: transparent; color: #4285F4; border: 1px solid #4285F4; margin-top: 10px;">🔄 Force Sync</button>
     
-    <button id="manualSyncBtn" onclick="manualSync()">🔄 Refresh Data</button>
-    
-    <div id="syncStatusText">Initializing App...</div>
-    
-    <div id="notesList">
-      </div>
+    <div id="syncStatusText">Initializing...</div>
+    <div id="notesList"></div>
   </div>
 
   <script>
     // ==========================================
-    // !!! PASTE YOUR GOOGLE APPS SCRIPT URL HERE !!!
+    // !!! PASTE YOUR NEW APPS SCRIPT URL HERE !!!
     // ==========================================
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx7pP3Qm4EMMdXX-m6lkO1wLHhfIqOvjOF80Qyrg4S0RtOYRH13FvUdOCFhjCYcAFAx/exec";
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx4hDugn3THAt4lmp5jtW7IGjW2ZFH-AbQiuQ3TrOLk9fxPgrkPprfRh2BPZAXvU2qS/exec";
 
-    // ==========================================
-    // 1. PWA INSTALL LOGIC
-    // ==========================================
-    let deferredPrompt;
-    const installBtn = document.getElementById('installAppBtn');
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault(); deferredPrompt = e; installBtn.style.display = 'block';
-    });
-    installBtn.addEventListener('click', async () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt(); await deferredPrompt.userChoice;
-        deferredPrompt = null; installBtn.style.display = 'none';
-      }
-    });
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 
     // ==========================================
-    // 2. INDEXED-DB LOGIC
+    // 1. INDEXED-DB SETUP (v3 Schema)
     // ==========================================
     let db;
     function initDB() {
       return new Promise((resolve, reject) => {
-        const request = indexedDB.open("GasAppDatabase", 2);
+        const request = indexedDB.open("GasAppDatabase", 3);
         request.onupgradeneeded = function(event) {
           const database = event.target.result;
-          let store;
           if (!database.objectStoreNames.contains("notes")) {
-            store = database.createObjectStore("notes", { keyPath: "id" });
-          } else {
-            store = event.target.transaction.objectStore("notes");
+            const store = database.createObjectStore("notes", { keyPath: "id" });
+            store.createIndex("syncStatus", "syncStatus", { unique: false });
+            store.createIndex("updatedAt", "updatedAt", { unique: false });
           }
-          if (!store.indexNames.contains("syncStatus")) store.createIndex("syncStatus", "syncStatus", { unique: false });
-          if (!store.indexNames.contains("timestamp")) store.createIndex("timestamp", "timestamp", { unique: false });
         };
-        request.onsuccess = function(event) { db = event.target.result; resolve(); };
-        request.onerror = function(event) { reject("IndexedDB Error"); };
+        request.onsuccess = e => { db = e.target.result; resolve(); };
+        request.onerror = e => reject("IndexedDB Error");
       });
     }
 
-    function idbOperation(mode, callback) {
-      return new Promise((resolve, reject) => {
-        const transaction = db.transaction(["notes"], mode);
-        const store = transaction.objectStore("notes");
-        const request = callback(store);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
+    function idbStore(mode) {
+      return db.transaction(["notes"], mode).objectStore("notes");
     }
 
     // ==========================================
-    // 3. CORE APP LOGIC
+    // 2. CRUD OPERATIONS
     // ==========================================
-    function generateID() {
-      return Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 9);
-    }
-
     window.onload = async () => {
       await initDB();
       await renderNotes(); 
-      document.getElementById('syncStatusText').innerText = "App Ready.";
-      
-      // Initial fetch on load
-      await syncDown(); 
-      await syncUp();   
+      await syncData(); // Unified sync on load
     };
 
     async function handleSave() {
       const input = document.getElementById('noteInput');
+      const editId = document.getElementById('editId').value;
       const text = input.value.trim();
       if (!text) return;
 
-      const newNote = {
-        id: generateID(),
-        text: text,
-        timestamp: Date.now(),
-        syncStatus: 0 // Needs upload
-      };
+      const now = Date.now();
+      let note;
 
-      await idbOperation("readwrite", store => store.put(newNote));
+      if (editId) {
+        // UPDATE Existing Note
+        note = await new Promise(res => {
+          const req = idbStore("readonly").get(editId);
+          req.onsuccess = () => res(req.result);
+        });
+        note.text = text;
+        note.updatedAt = now;
+        note.syncStatus = 0;
+      } else {
+        // CREATE New Note
+        note = {
+          id: now.toString(36) + '-' + Math.random().toString(36).substring(2, 9),
+          text: text,
+          createdAt: now,
+          updatedAt: now,
+          deleted: false,
+          syncStatus: 0
+        };
+      }
+
+      await new Promise(res => {
+        const req = idbStore("readwrite").put(note);
+        req.onsuccess = res;
+      });
+
+      // Reset UI
       input.value = "";
-      await renderNotes();
+      document.getElementById('editId').value = "";
+      document.getElementById('saveBtn').innerText = "Save Note";
       
-      // Trigger sync up immediately after saving
-      await syncUp();
+      await renderNotes();
+      syncData(); // Trigger unified sync in background
+    }
+
+    function triggerEdit(id, text) {
+      document.getElementById('noteInput').value = text;
+      document.getElementById('editId').value = id;
+      document.getElementById('saveBtn').innerText = "Update Note";
+    }
+
+    async function triggerDelete(id) {
+      if(!confirm("Delete this note?")) return;
+      
+      const note = await new Promise(res => {
+        const req = idbStore("readonly").get(id);
+        req.onsuccess = () => res(req.result);
+      });
+
+      // Tombstone pattern
+      note.deleted = true;
+      note.updatedAt = Date.now();
+      note.syncStatus = 0;
+
+      await new Promise(res => {
+        const req = idbStore("readwrite").put(note);
+        req.onsuccess = res;
+      });
+
+      await renderNotes();
+      syncData();
     }
 
     async function renderNotes() {
-      const notes = await idbOperation("readonly", store => store.getAll());
-      notes.sort((a, b) => b.timestamp - a.timestamp); 
+      const notes = await new Promise(res => {
+        const req = idbStore("readonly").getAll();
+        req.onsuccess = () => res(req.result);
+      });
       
+      notes.sort((a, b) => b.updatedAt - a.updatedAt); 
       const listElement = document.getElementById('notesList');
-      listElement.innerHTML = notes.map(note => `
+      
+      listElement.innerHTML = notes
+        .filter(n => !n.deleted) // HIDE TOMBSTONES
+        .map(note => `
         <div class="note-item">
-          <span>${note.text}</span>
-          <span class="cloud-icon" title="Sync Status">${note.syncStatus === 1 ? '☁️ ✔' : '⏳'}</span>
+          <div class="note-content">${note.text} <br>
+             <span style="font-size: 10px; color: gray;">${note.syncStatus === 1 ? '☁️ Synced' : '⏳ Pending'}</span>
+          </div>
+          <div>
+            <button class="action-btn edit-btn" onclick="triggerEdit('${note.id}', '${note.text.replace(/'/g, "\\'")}')">Edit</button>
+            <button class="action-btn del-btn" onclick="triggerDelete('${note.id}')">X</button>
+          </div>
         </div>
       `).join('');
     }
 
     // ==========================================
-    // 4. DELTA SYNC ENGINE
+    // 3. UNIFIED DELTA SYNC ENGINE
     // ==========================================
+    async function syncData() {
+      if (!navigator.onLine) {
+        document.getElementById('syncStatusText').innerText = "Offline. Changes saved locally.";
+        return;
+      }
+      
+      document.getElementById('syncStatusText').innerText = "Syncing...";
+      
+      // Step A: Push local changes first
+      await syncUp();
+      // Step B: Pull server changes immediately after
+      await syncDown();
+    }
 
     async function syncUp() {
-      const allNotes = await idbOperation("readonly", store => store.getAll());
-      const pendingNotes = allNotes.filter(n => n.syncStatus === 0);
+      // HIGH PERFORMANCE GAIN: Query IDB Index for syncStatus = 0 instead of getAll()
+      const pendingNotes = await new Promise(res => {
+        const tx = db.transaction("notes", "readonly");
+        const index = tx.objectStore("notes").index("syncStatus");
+        const req = index.getAll(IDBKeyRange.only(0));
+        req.onsuccess = () => res(req.result);
+      });
 
       if (pendingNotes.length === 0) return;
-      document.getElementById('syncStatusText').innerText = "Uploading data...";
 
       try {
         const response = await fetch(WEB_APP_URL, {
@@ -239,81 +207,69 @@
         const result = await response.json();
 
         if (result.status === 'success') {
-          const transaction = db.transaction(["notes"], "readwrite");
-          const store = transaction.objectStore("notes");
+          const tx = db.transaction(["notes"], "readwrite");
+          const store = tx.objectStore("notes");
           pendingNotes.forEach(note => {
             note.syncStatus = 1;
             store.put(note);
           });
-          document.getElementById('syncStatusText').innerText = "Notes uploaded successfully.";
-          renderNotes(); 
+          // Wait for IDB commit before continuing
+          await new Promise(res => tx.oncomplete = res); 
         }
       } catch (error) {
-        document.getElementById('syncStatusText').innerText = "Offline. Will sync later.";
+        console.error("Sync Up Error", error);
       }
     }
 
     async function syncDown() {
       let cursor = parseInt(localStorage.getItem('cloudSyncCursor')) || 0;
-      document.getElementById('syncStatusText').innerText = "Checking for updates...";
 
       try {
         const response = await fetch(`${WEB_APP_URL}?lastSync=${cursor}`);
         const result = await response.json();
 
         if (result.status === 'success' && result.data.length > 0) {
-          const transaction = db.transaction(["notes"], "readwrite");
-          const store = transaction.objectStore("notes");
+          const tx = db.transaction(["notes"], "readwrite");
+          const store = tx.objectStore("notes");
           
           let highestNewTimestamp = cursor;
 
-          result.data.forEach(note => {
-            store.put(note); 
-            if (note.timestamp > highestNewTimestamp) {
-              highestNewTimestamp = note.timestamp;
-            }
-          });
+          // Process incoming data
+          for (const serverNote of result.data) {
+             // Conflict Resolution: LWW (Last Write Wins)
+             const req = store.get(serverNote.id);
+             req.onsuccess = () => {
+                const localNote = req.result;
+                if (!localNote || serverNote.updatedAt > localNote.updatedAt) {
+                   store.put(serverNote);
+                }
+             };
+             if (serverNote.updatedAt > highestNewTimestamp) {
+                highestNewTimestamp = serverNote.updatedAt;
+             }
+          }
+
+          // Advance cursor ONLY after transaction commits successfully
+          tx.oncomplete = () => {
+            localStorage.setItem('cloudSyncCursor', highestNewTimestamp);
+            document.getElementById('syncStatusText').innerText = "App is up to date.";
+            renderNotes(); 
+          };
           
-          localStorage.setItem('cloudSyncCursor', highestNewTimestamp);
-          
-          document.getElementById('syncStatusText').innerText = "App is up to date.";
-          renderNotes(); 
         } else {
           document.getElementById('syncStatusText').innerText = "App is up to date.";
+          renderNotes(); // Just refresh UI status
         }
       } catch (error) {
          document.getElementById('syncStatusText').innerText = "Offline mode active.";
       }
     }
 
-    async function manualSync() {
-      if (navigator.onLine) {
-        await syncDown();
-        await syncUp();
-      } else {
-        document.getElementById('syncStatusText').innerText = "You are currently offline.";
-      }
-    }
-
-    // ==========================================
-    // 5. SMART AUTO-SYNC TRIGGERS (Highly Efficient)
-    // ==========================================
-
-    // Trigger 1: Syncs ONLY when the user switches to the app tab or unlocks their phone
+    // Auto-Sync Triggers
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && navigator.onLine) {
-        document.getElementById('syncStatusText').innerText = "Welcome back! Checking for updates...";
-        syncDown();
-        syncUp();
-      }
+      if (document.visibilityState === "visible") syncData();
     });
-
-    // Trigger 2: Syncs the exact moment the device connects back to Wi-Fi/Cellular
-    window.addEventListener("online", () => {
-        document.getElementById('syncStatusText').innerText = "Connection restored! Syncing...";
-        syncDown();
-        syncUp();
-    });
+    window.addEventListener("online", syncData);
 
   </script>
 </body>
