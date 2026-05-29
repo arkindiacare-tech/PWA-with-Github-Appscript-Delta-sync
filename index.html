@@ -47,6 +47,7 @@
       margin-top: 10px;
     }
     button:hover { background-color: #3367D6; }
+    
     #installAppBtn {
       background-color: #34A853; 
       font-weight: bold;
@@ -54,13 +55,26 @@
       margin-bottom: 20px;
       box-shadow: 0 4px 6px rgba(0,0,0,0.2);
     }
+    
+    /* New Manual Sync Button Styling */
+    #manualSyncBtn {
+      background-color: transparent;
+      color: #4285F4;
+      border: 1px solid #4285F4;
+      margin-top: 15px;
+      padding: 8px;
+      font-size: 14px;
+    }
+    #manualSyncBtn:hover {
+      background-color: #e8f0fe;
+    }
+
     #syncStatusText {
       margin-top: 15px;
       font-size: 14px;
       font-weight: bold;
       color: #555;
     }
-    /* Styles for the Notes List */
     #notesList {
       margin-top: 20px;
       text-align: left;
@@ -87,10 +101,12 @@
 
   <div class="card">
     <h2>Fast Notes PWA</h2>
-    <p style="font-size: 12px; color: gray;">Delta Sync Engine Active</p>
+    <p style="font-size: 12px; color: gray;">Smart Event-Driven Sync Active</p>
     
     <input type="text" id="noteInput" placeholder="Type a note here...">
     <button onclick="handleSave()">Save Note</button>
+    
+    <button id="manualSyncBtn" onclick="manualSync()">🔄 Refresh Data</button>
     
     <div id="syncStatusText">Initializing App...</div>
     
@@ -102,9 +118,11 @@
     // ==========================================
     // !!! PASTE YOUR GOOGLE APPS SCRIPT URL HERE !!!
     // ==========================================
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx7pP3Qm4EMMdXX-m6lkO1wLHhfIqOvjOF80Qyrg4S0RtOYRH13FvUdOCFhjCYcAFAx/exec";
+    const WEB_APP_URL = "PASTE_YOUR_NEW_URL_HERE";
 
-    // 1. PWA INSTALL LOGIC (Unchanged)
+    // ==========================================
+    // 1. PWA INSTALL LOGIC
+    // ==========================================
     let deferredPrompt;
     const installBtn = document.getElementById('installAppBtn');
     window.addEventListener('beforeinstallprompt', (e) => {
@@ -119,14 +137,12 @@
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 
     // ==========================================
-    // 2. ADVANCED INDEXED-DB LOGIC
+    // 2. INDEXED-DB LOGIC
     // ==========================================
     let db;
     function initDB() {
       return new Promise((resolve, reject) => {
-        // Upgraded to Version 2 to support Delta Sync Indexes
         const request = indexedDB.open("GasAppDatabase", 2);
-
         request.onupgradeneeded = function(event) {
           const database = event.target.result;
           let store;
@@ -135,17 +151,14 @@
           } else {
             store = event.target.transaction.objectStore("notes");
           }
-          // Indexes allow us to rapidly query "give me all unsynced notes" or "find max timestamp"
           if (!store.indexNames.contains("syncStatus")) store.createIndex("syncStatus", "syncStatus", { unique: false });
           if (!store.indexNames.contains("timestamp")) store.createIndex("timestamp", "timestamp", { unique: false });
         };
-
         request.onsuccess = function(event) { db = event.target.result; resolve(); };
         request.onerror = function(event) { reject("IndexedDB Error"); };
       });
     }
 
-    // Helper: Wrap IDB in Promises for clean async/await code
     function idbOperation(mode, callback) {
       return new Promise((resolve, reject) => {
         const transaction = db.transaction(["notes"], mode);
@@ -159,24 +172,20 @@
     // ==========================================
     // 3. CORE APP LOGIC
     // ==========================================
-    
-    // Generate a secure, cross-device unique ID
     function generateID() {
       return Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 9);
     }
 
-    // Initialize App Flow
     window.onload = async () => {
       await initDB();
-      await renderNotes(); // Show whatever we already have offline instantly
-      document.getElementById('syncStatusText').innerText = "App Ready. Syncing with cloud...";
+      await renderNotes(); 
+      document.getElementById('syncStatusText').innerText = "App Ready.";
       
-      // Perform Delta Syncs on load
+      // Initial fetch on load
       await syncDown(); 
       await syncUp();   
     };
 
-    // Save Button Trigger
     async function handleSave() {
       const input = document.getElementById('noteInput');
       const text = input.value.trim();
@@ -186,24 +195,19 @@
         id: generateID(),
         text: text,
         timestamp: Date.now(),
-        syncStatus: 0 // 0 = Needs to be pushed to cloud
+        syncStatus: 0 // Needs upload
       };
 
-      // 1. Save locally instantly
       await idbOperation("readwrite", store => store.put(newNote));
       input.value = "";
-      
-      // 2. Update screen instantly
       await renderNotes();
       
-      // 3. Quietly trigger upload in the background
-      syncUp();
+      // Trigger sync up immediately after saving
+      await syncUp();
     }
 
-    // Draw notes to the screen
     async function renderNotes() {
       const notes = await idbOperation("readonly", store => store.getAll());
-      // Sort newest to oldest
       notes.sort((a, b) => b.timestamp - a.timestamp); 
       
       const listElement = document.getElementById('notesList');
@@ -219,18 +223,12 @@
     // 4. DELTA SYNC ENGINE
     // ==========================================
 
-    // Push local missing data TO Google
     async function syncUp() {
-      document.getElementById('syncStatusText').innerText = "Pushing data...";
-      
-      // Find all notes where syncStatus is 0
       const allNotes = await idbOperation("readonly", store => store.getAll());
       const pendingNotes = allNotes.filter(n => n.syncStatus === 0);
 
-      if (pendingNotes.length === 0) {
-        document.getElementById('syncStatusText').innerText = "All data up to date.";
-        return;
-      }
+      if (pendingNotes.length === 0) return;
+      document.getElementById('syncStatusText').innerText = "Uploading data...";
 
       try {
         const response = await fetch(WEB_APP_URL, {
@@ -241,54 +239,82 @@
         const result = await response.json();
 
         if (result.status === 'success') {
-          // Update local DB to mark them as synced (status 1)
           const transaction = db.transaction(["notes"], "readwrite");
           const store = transaction.objectStore("notes");
           pendingNotes.forEach(note => {
             note.syncStatus = 1;
             store.put(note);
           });
-          
-          document.getElementById('syncStatusText').innerText = "Sync complete.";
-          renderNotes(); // Refresh UI to show cloud checkmarks
+          document.getElementById('syncStatusText').innerText = "Notes uploaded successfully.";
+          renderNotes(); 
         }
       } catch (error) {
         document.getElementById('syncStatusText').innerText = "Offline. Will sync later.";
       }
     }
 
-    // Pull missing data FROM Google
     async function syncDown() {
-      document.getElementById('syncStatusText').innerText = "Checking for new data...";
-      
-      // Find the highest timestamp we currently have locally
-      const allNotes = await idbOperation("readonly", store => store.getAll());
-      let maxTimestamp = 0;
-      if (allNotes.length > 0) {
-        maxTimestamp = Math.max(...allNotes.map(n => n.timestamp));
-      }
+      let cursor = parseInt(localStorage.getItem('cloudSyncCursor')) || 0;
+      document.getElementById('syncStatusText').innerText = "Checking for updates...";
 
       try {
-        // Send our highest timestamp to Google
-        const response = await fetch(`${WEB_APP_URL}?lastSync=${maxTimestamp}`);
+        const response = await fetch(`${WEB_APP_URL}?lastSync=${cursor}`);
         const result = await response.json();
 
         if (result.status === 'success' && result.data.length > 0) {
-          // Save the new rows from Google directly into IndexedDB
           const transaction = db.transaction(["notes"], "readwrite");
           const store = transaction.objectStore("notes");
           
-          result.data.forEach(note => store.put(note));
+          let highestNewTimestamp = cursor;
+
+          result.data.forEach(note => {
+            store.put(note); 
+            if (note.timestamp > highestNewTimestamp) {
+              highestNewTimestamp = note.timestamp;
+            }
+          });
           
-          document.getElementById('syncStatusText').innerText = `Fetched ${result.data.length} new records!`;
-          renderNotes(); // Refresh UI to show new notes
+          localStorage.setItem('cloudSyncCursor', highestNewTimestamp);
+          
+          document.getElementById('syncStatusText').innerText = "App is up to date.";
+          renderNotes(); 
         } else {
-          document.getElementById('syncStatusText').innerText = "All data up to date.";
+          document.getElementById('syncStatusText').innerText = "App is up to date.";
         }
       } catch (error) {
-         document.getElementById('syncStatusText').innerText = "Offline. Reading local data.";
+         document.getElementById('syncStatusText').innerText = "Offline mode active.";
       }
     }
+
+    async function manualSync() {
+      if (navigator.onLine) {
+        await syncDown();
+        await syncUp();
+      } else {
+        document.getElementById('syncStatusText').innerText = "You are currently offline.";
+      }
+    }
+
+    // ==========================================
+    // 5. SMART AUTO-SYNC TRIGGERS (Highly Efficient)
+    // ==========================================
+
+    // Trigger 1: Syncs ONLY when the user switches to the app tab or unlocks their phone
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && navigator.onLine) {
+        document.getElementById('syncStatusText').innerText = "Welcome back! Checking for updates...";
+        syncDown();
+        syncUp();
+      }
+    });
+
+    // Trigger 2: Syncs the exact moment the device connects back to Wi-Fi/Cellular
+    window.addEventListener("online", () => {
+        document.getElementById('syncStatusText').innerText = "Connection restored! Syncing...";
+        syncDown();
+        syncUp();
+    });
+
   </script>
 </body>
 </html>
