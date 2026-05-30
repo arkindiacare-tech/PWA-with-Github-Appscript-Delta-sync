@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Enterprise PWA Sync</title>
+  <title>TaskForge PWA Sync</title>
   <link rel="manifest" href="manifest.json">
   <style>
     body { font-family: Arial; background: #f4f7f6; padding: 20px; display: flex; flex-direction: column; align-items: center; }
     .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 400px; }
     input { width: 90%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
-    button { background: #4285F4; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; }
+    button { background: #4285F4; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; }
     .action-btn { width: auto; padding: 6px 10px; font-size: 12px; margin-left: 5px; }
     .edit-btn { background: #f4b400; }
     .del-btn { background: #db4437; }
-    #syncStatusText { margin-top: 15px; font-size: 14px; color: #555; text-align: center; font-weight: bold; }
+    #syncStatusText { margin-top: 15px; font-size: 12px; color: #777; text-align: center; }
     #notesList { margin-top: 20px; width: 100%; max-height: 400px; overflow-y: auto; }
     .note-item { background: #eef2f5; padding: 10px; margin-bottom: 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;}
     .note-content { flex-grow: 1; word-break: break-word; font-size: 14px; }
@@ -22,13 +22,13 @@
 <body>
 
   <div class="card">
-    <h2>Advanced Notes</h2>
+    <h2>Fast Notes</h2>
     <input type="hidden" id="editId">
     <input type="text" id="noteInput" placeholder="Type a note...">
     <button onclick="handleSave()" id="saveBtn">Save Note</button>
     <button onclick="syncData()" style="background: transparent; color: #4285F4; border: 1px solid #4285F4; margin-top: 10px;">🔄 Force Sync</button>
     
-    <div id="syncStatusText">Initializing...</div>
+    <div id="syncStatusText">Loading local data...</div>
     <div id="notesList"></div>
   </div>
 
@@ -36,16 +36,23 @@
     // ==========================================
     // !!! PASTE YOUR NEW APPS SCRIPT URL HERE !!!
     // ==========================================
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzQC5VFVpxV5spw583B__lb9U01_WZmedEspxGY6iopYJKspVsi5NajLLv6vQQg-USl/exec";
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwJ3SrHRsb1CJ_Prltu_2cmAm4ti9As3wuxoXW5FYZ0APJPezt7Ju7kHrXck-UGPOwK/exec";
 
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 
-    // MUTEX & THROTTLE FLAGS
+    // MUTEX & DIRTY FLAGS
     let isSyncing = false;
-    let lastSyncTime = 0;
+    let syncPending = false; 
+
+    // SECURITY: XSS Escaping
+    function escapeHTML(str) {
+      return str.replace(/[&<>'"]/g, tag => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+        }[tag]));
+    }
 
     // ==========================================
-    // 1. INDEXED-DB SETUP (v4 Schema with Metadata)
+    // 1. INDEXED-DB SETUP
     // ==========================================
     let db;
     function initDB() {
@@ -53,14 +60,10 @@
         const request = indexedDB.open("GasAppDatabase", 4);
         request.onupgradeneeded = function(event) {
           const database = event.target.result;
-          
-          // Notes Store
           if (!database.objectStoreNames.contains("notes")) {
             const store = database.createObjectStore("notes", { keyPath: "id" });
             store.createIndex("syncStatus", "syncStatus", { unique: false });
           }
-          
-          // New Metadata Store (For Cursor)
           if (!database.objectStoreNames.contains("metadata")) {
             database.createObjectStore("metadata", { keyPath: "key" });
           }
@@ -70,7 +73,6 @@
       });
     }
 
-    // Helper Functions for IDB
     function idbStore(mode) {
       return db.transaction(["notes"], mode).objectStore("notes");
     }
@@ -92,12 +94,17 @@
     }
 
     // ==========================================
-    // 2. CRUD OPERATIONS
+    // 2. CRUD OPERATIONS & FAST STARTUP
     // ==========================================
+    
+    // FAST STARTUP FIX: Render instantly, sync quietly.
     window.onload = async () => {
       await initDB();
       await renderNotes(); 
-      syncData(); 
+      document.getElementById('syncStatusText').innerText = "Offline ready.";
+      
+      syncData(); // Trigger initial sync
+      setInterval(syncData, 60000); // 60-second periodic retry schedule
     };
 
     async function handleSave() {
@@ -138,7 +145,7 @@
       document.getElementById('saveBtn').innerText = "Save Note";
       
       await renderNotes();
-      syncData(); 
+      syncData(); // Trigger sync. The dirty flag handles overlaps.
     }
 
     function triggerEdit(id, text) {
@@ -179,11 +186,11 @@
         .filter(n => !n.deleted) 
         .map(note => `
         <div class="note-item">
-          <div class="note-content">${note.text} <br>
+          <div class="note-content">${escapeHTML(note.text)} <br>
              <span style="font-size: 10px; color: gray;">${note.syncStatus === 1 ? '☁️ Synced' : '⏳ Pending'}</span>
           </div>
           <div>
-            <button class="action-btn edit-btn" onclick="triggerEdit('${note.id}', '${note.text.replace(/'/g, "\\'")}')">Edit</button>
+            <button class="action-btn edit-btn" onclick="triggerEdit('${note.id}', '${escapeHTML(note.text.replace(/'/g, "\\'"))}')">Edit</button>
             <button class="action-btn del-btn" onclick="triggerDelete('${note.id}')">X</button>
           </div>
         </div>
@@ -191,26 +198,33 @@
     }
 
     // ==========================================
-    // 3. UNIFIED DELTA SYNC ENGINE (With Mutex)
+    // 3. UNIFIED DELTA SYNC ENGINE (With Dirty Flag)
     // ==========================================
     async function syncData() {
-      if (!navigator.onLine) {
-        document.getElementById('syncStatusText').innerText = "Offline.";
+      if (!navigator.onLine) return;
+      
+      // THE FIX: Dirty Flag Implementation
+      if (isSyncing) {
+        syncPending = true;
         return;
       }
-      
-      // MUTEX CHECK
-      if (isSyncing) return;
       isSyncing = true;
-
       document.getElementById('syncStatusText').innerText = "Syncing...";
       
       try {
         await syncUp();
         await syncDown();
-        lastSyncTime = Date.now(); // Update throttle timer
+        document.getElementById('syncStatusText').innerText = "App is up to date.";
+      } catch (err) {
+        document.getElementById('syncStatusText').innerText = "Network issue. Will retry.";
       } finally {
-        isSyncing = false; // RELEASE MUTEX
+        isSyncing = false; 
+        
+        // If user typed something while we were syncing, immediately sync again
+        if (syncPending) {
+          syncPending = false;
+          syncData(); 
+        }
       }
     }
 
@@ -224,96 +238,75 @@
 
       if (pendingNotes.length === 0) return;
 
-      try {
-        const response = await fetch(WEB_APP_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify(pendingNotes)
-        });
-        const result = await response.json();
+      const response = await fetch(WEB_APP_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(pendingNotes)
+      });
+      const result = await response.json();
 
-        if (result.status === 'success') {
-          const tx = db.transaction(["notes"], "readwrite");
-          const store = tx.objectStore("notes");
-          pendingNotes.forEach(note => {
-            note.syncStatus = 1;
-            store.put(note);
-          });
-          await new Promise(res => tx.oncomplete = res); 
-        }
-      } catch (error) {
-        console.error("Sync Up Error", error);
+      if (result.status === 'success') {
+        const tx = db.transaction(["notes"], "readwrite");
+        const store = tx.objectStore("notes");
+        pendingNotes.forEach(note => {
+          note.syncStatus = 1;
+          store.put(note);
+        });
+        await new Promise(res => tx.oncomplete = res); 
       }
     }
 
     async function syncDown() {
-      let cursor = await getCursor();
+      // Step back 1 millisecond on the cursor just to be absolutely certain we don't miss overlapped network hits
+      let cursor = (await getCursor()) - 1;
+      if (cursor < 0) cursor = 0;
 
-      try {
-        const response = await fetch(`${WEB_APP_URL}?lastSync=${cursor}`);
-        const result = await response.json();
+      const response = await fetch(`${WEB_APP_URL}?lastSync=${cursor}`);
+      const result = await response.json();
 
-        if (result.status === 'success' && result.data.length > 0) {
-          
-          // Fetch all local IDs first to avoid async operations inside the transaction loop
-          const localData = await new Promise(res => {
-            const req = idbStore("readonly").getAll();
-            req.onsuccess = () => res(req.result);
-          });
-          const localMap = {};
-          localData.forEach(n => localMap[n.id] = n);
+      if (result.status === 'success' && result.data.length > 0) {
+        const localData = await new Promise(res => {
+          const req = idbStore("readonly").getAll();
+          req.onsuccess = () => res(req.result);
+        });
+        const localMap = {};
+        localData.forEach(n => localMap[n.id] = n);
 
-          // Calculate final batch and advance cursor
-          let highestNewTimestamp = cursor;
-          const rowsToWrite = [];
+        let highestNewTimestamp = cursor;
+        const rowsToWrite = [];
 
-          for (const serverNote of result.data) {
-             const localNote = localMap[serverNote.id];
-             // LWW (Last Write Wins) Conflict Resolution
-             if (!localNote || serverNote.updatedAt > localNote.updatedAt) {
-                rowsToWrite.push(serverNote);
-             }
-             if (serverNote.updatedAt > highestNewTimestamp) {
-                highestNewTimestamp = serverNote.updatedAt;
-             }
-          }
-
-          if (rowsToWrite.length > 0) {
-            const tx = db.transaction(["notes"], "readwrite");
-            const store = tx.objectStore("notes");
-            rowsToWrite.forEach(note => store.put(note));
-            
-            // Advance cursor ONLY after transaction completes successfully
-            await new Promise(res => tx.oncomplete = res);
-          }
-          
-          await setCursor(highestNewTimestamp);
-          document.getElementById('syncStatusText').innerText = "App is up to date.";
-          renderNotes(); 
-          
-        } else {
-          document.getElementById('syncStatusText').innerText = "App is up to date.";
-          renderNotes(); 
+        for (const serverNote of result.data) {
+           const localNote = localMap[serverNote.id];
+           if (!localNote || serverNote.updatedAt > localNote.updatedAt) {
+              rowsToWrite.push(serverNote);
+           }
+           if (serverNote.updatedAt > highestNewTimestamp) {
+              highestNewTimestamp = serverNote.updatedAt;
+           }
         }
-      } catch (error) {
-         document.getElementById('syncStatusText').innerText = "Offline mode active.";
+
+        if (rowsToWrite.length > 0) {
+          const tx = db.transaction(["notes"], "readwrite");
+          const store = tx.objectStore("notes");
+          rowsToWrite.forEach(note => store.put(note));
+          await new Promise(res => tx.oncomplete = res);
+        }
+        
+        await setCursor(highestNewTimestamp);
+        renderNotes(); 
       }
     }
 
-    // ==========================================
-    // 4. OPTIMIZED TRIGGERS
-    // ==========================================
-    
-    // 5-Minute Visibility Cooldown
+    // Visibility Listener
+    let lastSyncTime = 0;
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState !== "visible") return;
       const now = Date.now();
-      if (now - lastSyncTime > 300000) { // 5 minutes
+      if (now - lastSyncTime > 300000) { 
          syncData();
+         lastSyncTime = now;
       }
     });
-    
-    window.addEventListener("online", syncData);
 
   </script>
 </body>
