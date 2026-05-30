@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Advanced PWA Sync</title>
+  <title>Enterprise PWA Sync</title>
   <link rel="manifest" href="manifest.json">
   <style>
     body { font-family: Arial; background: #f4f7f6; padding: 20px; display: flex; flex-direction: column; align-items: center; }
@@ -22,8 +22,7 @@
 <body>
 
   <div class="card">
-    <h2>Enterprise Sync App</h2>
-    
+    <h2>Advanced Notes</h2>
     <input type="hidden" id="editId">
     <input type="text" id="noteInput" placeholder="Type a note...">
     <button onclick="handleSave()" id="saveBtn">Save Note</button>
@@ -37,23 +36,33 @@
     // ==========================================
     // !!! PASTE YOUR NEW APPS SCRIPT URL HERE !!!
     // ==========================================
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx4hDugn3THAt4lmp5jtW7IGjW2ZFH-AbQiuQ3TrOLk9fxPgrkPprfRh2BPZAXvU2qS/exec";
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzQC5VFVpxV5spw583B__lb9U01_WZmedEspxGY6iopYJKspVsi5NajLLv6vQQg-USl/exec";
 
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 
+    // MUTEX & THROTTLE FLAGS
+    let isSyncing = false;
+    let lastSyncTime = 0;
+
     // ==========================================
-    // 1. INDEXED-DB SETUP (v3 Schema)
+    // 1. INDEXED-DB SETUP (v4 Schema with Metadata)
     // ==========================================
     let db;
     function initDB() {
       return new Promise((resolve, reject) => {
-        const request = indexedDB.open("GasAppDatabase", 3);
+        const request = indexedDB.open("GasAppDatabase", 4);
         request.onupgradeneeded = function(event) {
           const database = event.target.result;
+          
+          // Notes Store
           if (!database.objectStoreNames.contains("notes")) {
             const store = database.createObjectStore("notes", { keyPath: "id" });
             store.createIndex("syncStatus", "syncStatus", { unique: false });
-            store.createIndex("updatedAt", "updatedAt", { unique: false });
+          }
+          
+          // New Metadata Store (For Cursor)
+          if (!database.objectStoreNames.contains("metadata")) {
+            database.createObjectStore("metadata", { keyPath: "key" });
           }
         };
         request.onsuccess = e => { db = e.target.result; resolve(); };
@@ -61,8 +70,25 @@
       });
     }
 
+    // Helper Functions for IDB
     function idbStore(mode) {
       return db.transaction(["notes"], mode).objectStore("notes");
+    }
+    
+    function getCursor() {
+      return new Promise(res => {
+        const tx = db.transaction(["metadata"], "readonly");
+        const req = tx.objectStore("metadata").get("cloudCursor");
+        req.onsuccess = () => res(req.result ? req.result.value : 0);
+      });
+    }
+
+    function setCursor(val) {
+      return new Promise(res => {
+        const tx = db.transaction(["metadata"], "readwrite");
+        tx.objectStore("metadata").put({ key: "cloudCursor", value: val });
+        tx.oncomplete = res;
+      });
     }
 
     // ==========================================
@@ -71,7 +97,7 @@
     window.onload = async () => {
       await initDB();
       await renderNotes(); 
-      await syncData(); // Unified sync on load
+      syncData(); 
     };
 
     async function handleSave() {
@@ -84,7 +110,6 @@
       let note;
 
       if (editId) {
-        // UPDATE Existing Note
         note = await new Promise(res => {
           const req = idbStore("readonly").get(editId);
           req.onsuccess = () => res(req.result);
@@ -93,7 +118,6 @@
         note.updatedAt = now;
         note.syncStatus = 0;
       } else {
-        // CREATE New Note
         note = {
           id: now.toString(36) + '-' + Math.random().toString(36).substring(2, 9),
           text: text,
@@ -109,13 +133,12 @@
         req.onsuccess = res;
       });
 
-      // Reset UI
       input.value = "";
       document.getElementById('editId').value = "";
       document.getElementById('saveBtn').innerText = "Save Note";
       
       await renderNotes();
-      syncData(); // Trigger unified sync in background
+      syncData(); 
     }
 
     function triggerEdit(id, text) {
@@ -126,13 +149,10 @@
 
     async function triggerDelete(id) {
       if(!confirm("Delete this note?")) return;
-      
       const note = await new Promise(res => {
         const req = idbStore("readonly").get(id);
         req.onsuccess = () => res(req.result);
       });
-
-      // Tombstone pattern
       note.deleted = true;
       note.updatedAt = Date.now();
       note.syncStatus = 0;
@@ -156,7 +176,7 @@
       const listElement = document.getElementById('notesList');
       
       listElement.innerHTML = notes
-        .filter(n => !n.deleted) // HIDE TOMBSTONES
+        .filter(n => !n.deleted) 
         .map(note => `
         <div class="note-item">
           <div class="note-content">${note.text} <br>
@@ -171,24 +191,30 @@
     }
 
     // ==========================================
-    // 3. UNIFIED DELTA SYNC ENGINE
+    // 3. UNIFIED DELTA SYNC ENGINE (With Mutex)
     // ==========================================
     async function syncData() {
       if (!navigator.onLine) {
-        document.getElementById('syncStatusText').innerText = "Offline. Changes saved locally.";
+        document.getElementById('syncStatusText').innerText = "Offline.";
         return;
       }
       
+      // MUTEX CHECK
+      if (isSyncing) return;
+      isSyncing = true;
+
       document.getElementById('syncStatusText').innerText = "Syncing...";
       
-      // Step A: Push local changes first
-      await syncUp();
-      // Step B: Pull server changes immediately after
-      await syncDown();
+      try {
+        await syncUp();
+        await syncDown();
+        lastSyncTime = Date.now(); // Update throttle timer
+      } finally {
+        isSyncing = false; // RELEASE MUTEX
+      }
     }
 
     async function syncUp() {
-      // HIGH PERFORMANCE GAIN: Query IDB Index for syncStatus = 0 instead of getAll()
       const pendingNotes = await new Promise(res => {
         const tx = db.transaction("notes", "readonly");
         const index = tx.objectStore("notes").index("syncStatus");
@@ -213,7 +239,6 @@
             note.syncStatus = 1;
             store.put(note);
           });
-          // Wait for IDB commit before continuing
           await new Promise(res => tx.oncomplete = res); 
         }
       } catch (error) {
@@ -222,53 +247,72 @@
     }
 
     async function syncDown() {
-      let cursor = parseInt(localStorage.getItem('cloudSyncCursor')) || 0;
+      let cursor = await getCursor();
 
       try {
         const response = await fetch(`${WEB_APP_URL}?lastSync=${cursor}`);
         const result = await response.json();
 
         if (result.status === 'success' && result.data.length > 0) {
-          const tx = db.transaction(["notes"], "readwrite");
-          const store = tx.objectStore("notes");
           
-          let highestNewTimestamp = cursor;
+          // Fetch all local IDs first to avoid async operations inside the transaction loop
+          const localData = await new Promise(res => {
+            const req = idbStore("readonly").getAll();
+            req.onsuccess = () => res(req.result);
+          });
+          const localMap = {};
+          localData.forEach(n => localMap[n.id] = n);
 
-          // Process incoming data
+          // Calculate final batch and advance cursor
+          let highestNewTimestamp = cursor;
+          const rowsToWrite = [];
+
           for (const serverNote of result.data) {
-             // Conflict Resolution: LWW (Last Write Wins)
-             const req = store.get(serverNote.id);
-             req.onsuccess = () => {
-                const localNote = req.result;
-                if (!localNote || serverNote.updatedAt > localNote.updatedAt) {
-                   store.put(serverNote);
-                }
-             };
+             const localNote = localMap[serverNote.id];
+             // LWW (Last Write Wins) Conflict Resolution
+             if (!localNote || serverNote.updatedAt > localNote.updatedAt) {
+                rowsToWrite.push(serverNote);
+             }
              if (serverNote.updatedAt > highestNewTimestamp) {
                 highestNewTimestamp = serverNote.updatedAt;
              }
           }
 
-          // Advance cursor ONLY after transaction commits successfully
-          tx.oncomplete = () => {
-            localStorage.setItem('cloudSyncCursor', highestNewTimestamp);
-            document.getElementById('syncStatusText').innerText = "App is up to date.";
-            renderNotes(); 
-          };
+          if (rowsToWrite.length > 0) {
+            const tx = db.transaction(["notes"], "readwrite");
+            const store = tx.objectStore("notes");
+            rowsToWrite.forEach(note => store.put(note));
+            
+            // Advance cursor ONLY after transaction completes successfully
+            await new Promise(res => tx.oncomplete = res);
+          }
+          
+          await setCursor(highestNewTimestamp);
+          document.getElementById('syncStatusText').innerText = "App is up to date.";
+          renderNotes(); 
           
         } else {
           document.getElementById('syncStatusText').innerText = "App is up to date.";
-          renderNotes(); // Just refresh UI status
+          renderNotes(); 
         }
       } catch (error) {
          document.getElementById('syncStatusText').innerText = "Offline mode active.";
       }
     }
 
-    // Auto-Sync Triggers
+    // ==========================================
+    // 4. OPTIMIZED TRIGGERS
+    // ==========================================
+    
+    // 5-Minute Visibility Cooldown
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") syncData();
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastSyncTime > 300000) { // 5 minutes
+         syncData();
+      }
     });
+    
     window.addEventListener("online", syncData);
 
   </script>
