@@ -36,7 +36,7 @@
     // ==========================================
     // !!! PASTE YOUR NEW APPS SCRIPT URL HERE !!!
     // ==========================================
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwJ3SrHRsb1CJ_Prltu_2cmAm4ti9As3wuxoXW5FYZ0APJPezt7Ju7kHrXck-UGPOwK/exec";
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycby_3Ooco97KykAr0sThXn_59gzzJoPw4RjpXX_FqMf6pvfzbVR4YIL4GyD_mNLoFf2F/exec";
 
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 
@@ -45,8 +45,10 @@
     let syncPending = false; 
 
     // SECURITY: XSS Escaping
+    // SECURITY: XSS Escaping (Bulletproofed for numbers/nulls)
     function escapeHTML(str) {
-      return str.replace(/[&<>'"]/g, tag => ({
+      if (str == null) return ""; // Handle null or undefined gracefully
+      return String(str).replace(/[&<>'"]/g, tag => ({
           '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
         }[tag]));
     }
@@ -182,19 +184,24 @@
       notes.sort((a, b) => b.updatedAt - a.updatedAt); 
       const listElement = document.getElementById('notesList');
       
-      listElement.innerHTML = notes
+     listElement.innerHTML = notes
         .filter(n => !n.deleted) 
-        .map(note => `
-        <div class="note-item">
-          <div class="note-content">${escapeHTML(note.text)} <br>
-             <span style="font-size: 10px; color: gray;">${note.syncStatus === 1 ? '☁️ Synced' : '⏳ Pending'}</span>
+        .map(note => {
+          // FORCE the data to act as a string so .replace() never crashes
+          const safeText = String(note.text || ""); 
+          
+          return `
+          <div class="note-item">
+            <div class="note-content">${escapeHTML(safeText)} <br>
+               <span style="font-size: 10px; color: gray;">${note.syncStatus === 1 ? '☁️ Synced' : '⏳ Pending'}</span>
+            </div>
+            <div>
+              <button class="action-btn edit-btn" onclick="triggerEdit('${note.id}', '${escapeHTML(safeText.replace(/'/g, "\\'"))}')">Edit</button>
+              <button class="action-btn del-btn" onclick="triggerDelete('${note.id}')">X</button>
+            </div>
           </div>
-          <div>
-            <button class="action-btn edit-btn" onclick="triggerEdit('${note.id}', '${escapeHTML(note.text.replace(/'/g, "\\'"))}')">Edit</button>
-            <button class="action-btn del-btn" onclick="triggerDelete('${note.id}')">X</button>
-          </div>
-        </div>
-      `).join('');
+          `;
+        }).join('');
     }
 
     // ==========================================
